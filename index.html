@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live Call Map v1.6</title>
+    <title>Live Call Map v1.5</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
@@ -25,7 +25,7 @@
     <div id="header">
         <div class="logo">
             <div class="logo-icon"><i class="fas fa-map-marker-alt"></i></div>
-            <h1>Live Call Map v1.6 - Past call logs working - Area searching to add</h1>
+            <h1>Live Call Map v1.5 - Past call logs working - Area searching to add</h1>
         </div>
     </div>
     
@@ -548,10 +548,10 @@ async function fetchAndStoreCalls() {
         // Loop through each row, parse it, store valid calls locally
         for (let i = 0; i < payload.rows.length; i++) {
             const row = JSON.parse(payload.rows[i]);
-            const { number, queue, location, long, lat, time, status, cabinet, sfID } = row;
+            const { number, queue, location, long, lat, time, status, cabinet } = row;
             if (!number || !lat || !long) continue; // skip invalid rows
-            // Save the call to localStorage including sfID
-            saveCallToLocalStorage({ number, queue, location, long, lat, time, status, cabinet, sfID });
+            // Save the call to localStorage
+            saveCallToLocalStorage({ number, queue, location, long, lat, time, status, cabinet });
         }
         // Now load calls based on current time-filter value
         loadCallsFromLocalStorage();
@@ -675,36 +675,35 @@ function connect(albykey) {
     }
 }
 
-// Replace the current showCallFromMessage function with:
-function showCallFromMessage(data) {
-    console.log('New call data:', data);
-    // Create a unique id for the call
-    const id = 'call-' + Date.now();
-    let { number, queue, location, long, lat, time, status, cabinet, sfID } = data;
-    
-    // Normalize and set default time if not provided.
-    number = String(number);
-    lat = Number(lat);
-    long = Number(long);
-    if (!time) time = new Date().toISOString();
+        // New function to add a marker from an Alby message with auto-removal via TTL.
+        function showCallFromMessage(data) {
+            console.log('New call data:', data);
+            // Create a unique id for the call
+            const id = 'call-' + Date.now();
+            let { number, queue, location, long, lat, time, status, cabinet } = data;
+            
+            // Normalize and set default time if not provided.
+            number = String(number);
+            lat = Number(lat);
+            long = Number(long);
+            if (!time) time = new Date().toISOString();
 
-    // Build the call object and save it to localStorage (now including sfID)
-    const call = { id, number, queue, location, long, lat, time, status, cabinet, sfID };
-    saveCallToLocalStorage(call);
-    
-    // Immediately refresh the markers
-    loadCallsFromLocalStorage();
-}
+            // Build the call object and save it to localStorage
+            const call = { id, number, queue, location, long, lat, time, status, cabinet };
+            saveCallToLocalStorage(call);
+            
+            // Immediately refresh the markers
+            loadCallsFromLocalStorage();
+        }
 
-// ---- Update addCallMarker to store cabinet in activePings ----
+        // ---- Update addCallMarker to store cabinet in activePings ----
 function addCallMarker(call) {
-    const { id, number, queue, location, long, lat, time, status, cabinet, sfID} = call;
+    const { id, number, queue, location, long, lat, time, status, cabinet } = call;
     
     // Create marker with an icon based on the queue
     const marker = L.marker([lat, long], { icon: getIconForQueue(queue) });
     marker.bindPopup(`
         <div style="padding: 8px;">
-            <strong><a href="https://gigaclear.my.salesforce.com/${sfID}" target="_blank">Link to account on SF</a></strong><br>
             <strong>Call from:</strong> ${number}<br>
             <strong>Queue:</strong> ${queue}<br>
             <strong>Location:</strong> ${location}<br>
