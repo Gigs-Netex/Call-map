@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live Call Map v1.5</title>
+    <title>Live Call Map v1.6</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster/dist/MarkerCluster.Default.css" />
@@ -25,7 +25,7 @@
     <div id="header">
         <div class="logo">
             <div class="logo-icon"><i class="fas fa-map-marker-alt"></i></div>
-            <h1>Live Call Map v1.5 - Past call logs working - Area searching to add</h1>
+            <h1>Live Call Map v1.6 - Past call logs working - Area searching to add</h1>
         </div>
     </div>
     
@@ -548,10 +548,10 @@ async function fetchAndStoreCalls() {
         // Loop through each row, parse it, store valid calls locally
         for (let i = 0; i < payload.rows.length; i++) {
             const row = JSON.parse(payload.rows[i]);
-            const { number, queue, location, long, lat, time, status, cabinet } = row;
+            const { number, queue, location, long, lat, time, status, cabinet, sfID } = row;
             if (!number || !lat || !long) continue; // skip invalid rows
-            // Save the call to localStorage
-            saveCallToLocalStorage({ number, queue, location, long, lat, time, status, cabinet });
+            // Save the call to localStorage including sfID
+            saveCallToLocalStorage({ number, queue, location, long, lat, time, status, cabinet, sfID });
         }
         // Now load calls based on current time-filter value
         loadCallsFromLocalStorage();
@@ -675,35 +675,36 @@ function connect(albykey) {
     }
 }
 
-        // New function to add a marker from an Alby message with auto-removal via TTL.
-        function showCallFromMessage(data) {
-            console.log('New call data:', data);
-            // Create a unique id for the call
-            const id = 'call-' + Date.now();
-            let { number, queue, location, long, lat, time, status, cabinet } = data;
-            
-            // Normalize and set default time if not provided.
-            number = String(number);
-            lat = Number(lat);
-            long = Number(long);
-            if (!time) time = new Date().toISOString();
+// Replace the current showCallFromMessage function with:
+function showCallFromMessage(data) {
+    console.log('New call data:', data);
+    // Create a unique id for the call
+    const id = 'call-' + Date.now();
+    let { number, queue, location, long, lat, time, status, cabinet, sfID } = data;
+    
+    // Normalize and set default time if not provided.
+    number = String(number);
+    lat = Number(lat);
+    long = Number(long);
+    if (!time) time = new Date().toISOString();
 
-            // Build the call object and save it to localStorage
-            const call = { id, number, queue, location, long, lat, time, status, cabinet };
-            saveCallToLocalStorage(call);
-            
-            // Immediately refresh the markers
-            loadCallsFromLocalStorage();
-        }
+    // Build the call object and save it to localStorage (now including sfID)
+    const call = { id, number, queue, location, long, lat, time, status, cabinet, sfID };
+    saveCallToLocalStorage(call);
+    
+    // Immediately refresh the markers
+    loadCallsFromLocalStorage();
+}
 
-        // ---- Update addCallMarker to store cabinet in activePings ----
+// ---- Update addCallMarker to store cabinet in activePings ----
 function addCallMarker(call) {
-    const { id, number, queue, location, long, lat, time, status, cabinet } = call;
+    const { id, number, queue, location, long, lat, time, status, cabinet, sfID} = call;
     
     // Create marker with an icon based on the queue
     const marker = L.marker([lat, long], { icon: getIconForQueue(queue) });
     marker.bindPopup(`
         <div style="padding: 8px;">
+            <strong><a href="https://gigaclear.my.salesforce.com/${sfID}" target="_blank">Link to account on SF</a></strong><br>
             <strong>Call from:</strong> ${number}<br>
             <strong>Queue:</strong> ${queue}<br>
             <strong>Location:</strong> ${location}<br>
@@ -834,6 +835,354 @@ function updateClusterDensity() {
     // Reload pins from localStorage based on the current time filter.
     loadCallsFromLocalStorage();
 }
+
+// Track recent calls per cabinet for alerting
+const cabinetAlertWindowMs = 5 * 60 * 1000; // 5 minutes
+const cabinetAlertThreshold = 5;
+const cabinetRecentCalls = {}; // { cabinetName: [timestamps] }
+const activeCabinetAlerts = new Map(); // Track active alert markers and boxes
+
+function checkCabinetAlert(cabinet, callTime, lat, long) {
+    if (!cabinet) return;
+    const now = typeof callTime === "number" ? callTime : new Date(callTime).getTime();
+    if (!cabinetRecentCalls[cabinet]) {
+        cabinetRecentCalls[cabinet] = [];
+    }
+    // Add this call's timestamp
+    cabinetRecentCalls[cabinet].push(now);
+
+    // Remove timestamps older than 5 minutes
+    cabinetRecentCalls[cabinet] = cabinetRecentCalls[cabinet].filter(
+        t => now - t <= cabinetAlertWindowMs
+    );
+
+    // If more than threshold, alert on map
+    if (cabinetRecentCalls[cabinet].length >= cabinetAlertThreshold) {
+        showCabinetAlertOnMap(cabinet, cabinetRecentCalls[cabinet].length, lat, long);
+        // Optional: clear to avoid repeated alerts for same incident
+        cabinetRecentCalls[cabinet] = [];
+    }
+}
+
+function showCabinetAlertOnMap(cabinet, callCount, lat, long) {
+    // Remove existing alert for this cabinet if any
+    removeCabinetAlert(cabinet);
+
+    // Create custom alert icon
+    const alertIcon = L.divIcon({
+        className: 'cabinet-alert-marker',
+        html: `⚠️<br><span style="font-size:8px">${cabinet}</span>`,
+        iconSize: [30, 30],
+        iconAnchor: [15, 15]
+    });
+
+    // Create alert marker
+    const alertMarker = L.marker([lat, long], { icon: alertIcon })
+        .addTo(map)
+        .bindPopup(`
+            <div class="cabinet-alert-popup">
+                <h4>🚨 Cabinet Alert</h4>
+                <p><strong>${cabinet}</strong> has generated ${callCount} calls 
+                in the last 5 minutes!</p>
+                <button onclick="acknowledgeAlert('${cabinet}')" 
+                        style="background: #d9534f; color: white; border: none; 
+                               padding: 5px 10px; border-radius: 3px; cursor: pointer;">
+                    Acknowledge
+                </button>
+            </div>
+        `);
+
+    alertMarker.setZIndexOffset(1000);
+
+    // Create persistent alert box
+    createAlertBox(cabinet, callCount);
+
+    // Store references
+    activeCabinetAlerts.set(cabinet, {
+        marker: alertMarker,
+        callCount: callCount,
+        timestamp: new Date()
+    });
+}
+
+function createAlertBox(cabinet, callCount) {
+    // Create or get alert container
+    let alertContainer = document.getElementById('cabinet-alert-container');
+    if (!alertContainer) {
+        alertContainer = document.createElement('div');
+        alertContainer.id = 'cabinet-alert-container';
+        alertContainer.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            max-width: 300px;
+        `;
+        document.body.appendChild(alertContainer);
+    }
+
+    // Create individual alert box
+    const alertBox = document.createElement('div');
+    alertBox.id = `alert-${cabinet}`;
+    alertBox.className = 'cabinet-alert-box';
+    alertBox.innerHTML = `
+        <div class="alert-header">
+            <span class="alert-icon">🚨</span>
+            <strong>Cabinet Alert</strong>
+            <button class="alert-close" onclick="acknowledgeAlert('${cabinet}')">×</button>
+        </div>
+        <div class="alert-body">
+            <p><strong>${cabinet}</strong> has received <strong>${callCount}</strong> calls in the last 5 minutes.</p>
+            <p>Please check the cabinet for any issues.</p>
+        </div>
+    `;
+    alertContainer.appendChild(alertBox);
+
+    // Optional: auto-close alert box after 10 seconds
+    setTimeout(() => {
+        if (alertBox.parentNode) {
+            alertBox.parentNode.removeChild(alertBox);
+        }
+    }, 10 * 1000);
+}
+
+// Acknowledge an alert (remove from map and list)
+function acknowledgeAlert(cabinet) {
+    removeCabinetAlert(cabinet);
+    // Optionally, also remove from recent calls tracking
+    delete cabinetRecentCalls[cabinet];
+}
+
+// Remove cabinet alert (marker and box) from map
+function removeCabinetAlert(cabinet) {
+    const alert = activeCabinetAlerts.get(cabinet);
+    if (alert) {
+        map.removeLayer(alert.marker);
+        activeCabinetAlerts.delete(cabinet);
+    }
+}
+
+// --- Queue Call Limit Alert Logic ---
+const queueAlertThreshold = 10;
+const queueAlertDuration = 30000; // 30 seconds
+let activeQueueAlerts = {}; // { queueName: { timeoutId: number, element: HTMLElement } }
+
+function checkQueueAlert() {
+    // Count active calls per queue
+    const queueCounts = {};
+    activePings.forEach(ping => {
+        if (ping.queue) {
+            queueCounts[ping.queue] = (queueCounts[ping.queue] || 0) + 1;
+        }
+    });
+
+    // Check for alerts to show
+    Object.entries(queueCounts).forEach(([queue, count]) => {
+        if (count >= queueAlertThreshold && !activeQueueAlerts[queue]) {
+            showQueueAlert(queue, count);
+        }
+    });
+
+    // Check for alerts to remove (if count dropped below threshold)
+    Object.keys(activeQueueAlerts).forEach(queue => {
+        if ((queueCounts[queue] || 0) < queueAlertThreshold) {
+            removeQueueAlert(queue);
+        }
+    });
+}
+
+function showQueueAlert(queue, count) {
+    // Create alert container if not present
+    let alertContainer = document.getElementById('queue-alert-container');
+    if (!alertContainer) {
+        alertContainer = document.createElement('div');
+        alertContainer.id = 'queue-alert-container';
+        alertContainer.style.cssText = `
+            position: fixed;
+            top: 50px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 2000;
+            pointer-events: none;
+        `;
+        document.body.appendChild(alertContainer);
+    }
+
+    // Create alert box
+    const alertBox = document.createElement('div');
+    alertBox.className = 'queue-alert-box';
+    alertBox.dataset.queue = queue;
+    alertBox.innerHTML = `
+        <div class="queue-alert-content">
+            <span class="queue-alert-icon">⚡</span>
+            <strong>Queue Alert:</strong>
+            <span class="queue-alert-name">${queue}</span>
+            <span class="queue-alert-count">(${count} calls)</span>
+            <button class="queue-alert-dismiss" onclick="removeQueueAlert('${queue}')" 
+                    style="background: none; border: none; color: #d84315; cursor: pointer; 
+                           font-size: 1.2em; margin-left: 10px; pointer-events: auto;" 
+                    title="Dismiss alert">×</button>
+        </div>
+    `;
+    alertContainer.appendChild(alertBox);
+
+    // Remove after timeout duration
+    const timeoutId = setTimeout(() => {
+        removeQueueAlert(queue);
+    }, queueAlertDuration);
+
+    activeQueueAlerts[queue] = {
+        timeoutId: timeoutId,
+        element: alertBox
+    };
+}
+
+function removeQueueAlert(queue) {
+    if (activeQueueAlerts[queue]) {
+        // Clear timeout
+        clearTimeout(activeQueueAlerts[queue].timeoutId);
+        
+        // Remove element
+        if (activeQueueAlerts[queue].element && activeQueueAlerts[queue].element.parentNode) {
+            activeQueueAlerts[queue].element.remove();
+        }
+        
+        // Remove from tracking
+        delete activeQueueAlerts[queue];
+    }
+
+    // Clean up container if empty
+    const alertContainer = document.getElementById('queue-alert-container');
+    if (alertContainer && alertContainer.childElementCount === 0) {
+        alertContainer.remove();
+    }
+}
+
+// Enhanced CSS for queue alert
+const queueAlertStyle = document.createElement('style');
+queueAlertStyle.textContent = `
+.queue-alert-box {
+    background: linear-gradient(135deg, #ffecb3 0%, #fff176 100%);
+    border: 3px solid #ff9800;
+    color: #d84315;
+    font-size: 1.3em;
+    font-weight: bold;
+    border-radius: 10px;
+    margin: 10px auto;
+    padding: 18px 32px;
+    box-shadow: 0 0 18px 4px #ff9800aa, 0 4px 12px rgba(0,0,0,0.15);
+    animation: queue-flash 1s infinite alternate;
+    text-align: center;
+    min-width: 320px;
+    max-width: 90vw;
+    backdrop-filter: blur(4px);
+}
+.queue-alert-content {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+.queue-alert-icon {
+    font-size: 1.6em;
+    animation: queue-icon-pulse 1s infinite alternate;
+}
+.queue-alert-name {
+    color: #ff5722;
+    margin: 0 8px;
+    font-weight: 800;
+}
+.queue-alert-count {
+    color: #d84315;
+    font-weight: 700;
+}
+.queue-alert-dismiss {
+    background: none;
+    border: none;
+    color: #d84315;
+    cursor: pointer;
+    font-size: 1.2em;
+    margin-left: 10px;
+    pointer-events: auto;
+    transition: color 0.2s ease;
+    padding: 0;
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+}
+.queue-alert-dismiss:hover {
+    color: #bf360c;
+    background: rgba(0,0,0,0.1);
+}
+@keyframes queue-flash {
+    from { 
+        background: linear-gradient(135deg, #ffecb3 0%, #fff176 100%);
+        box-shadow: 0 0 18px 4px #ff9800aa;
+    }
+    to { 
+        background: linear-gradient(135deg, #fff176 0%, #ffecb3 100%);
+        box-shadow: 0 0 22px 6px #ff9800cc;
+    }
+}
+@keyframes queue-icon-pulse {
+    from { 
+        transform: scale(1);
+        filter: drop-shadow(0 0 2px #ff9800);
+    }
+    to { 
+        transform: scale(1.2);
+        filter: drop-shadow(0 0 4px #ff5722);
+    }
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .queue-alert-box {
+        font-size: 1.1em;
+        padding: 12px 20px;
+        min-width: 280px;
+    }
+    .queue-alert-content {
+        gap: 8px;
+    }
+}
+`;
+document.head.appendChild(queueAlertStyle);
+
+// Better function wrapping approach
+function wrapFunction(originalFn, wrapperFn) {
+    return function(...args) {
+        const result = originalFn.apply(this, args);
+        wrapperFn();
+        return result;
+    };
+}
+
+// Wrap the functions properly
+addCallMarker = wrapFunction(addCallMarker, checkQueueAlert);
+removePing = wrapFunction(removePing, checkQueueAlert);
+clearAllPings = wrapFunction(clearAllPings, checkQueueAlert);
+
+// Also call checkQueueAlert after loading calls
+const originalLoadCallsFromLocalStorage = loadCallsFromLocalStorage;
+loadCallsFromLocalStorage = function() {
+    const result = originalLoadCallsFromLocalStorage.apply(this, arguments);
+    setTimeout(checkQueueAlert, 100); // Small delay to ensure DOM is ready
+    return result;
+};
+
+// Add this to handle window resize for better positioning
+window.addEventListener('resize', () => {
+    const alertContainer = document.getElementById('queue-alert-container');
+    if (alertContainer) {
+        alertContainer.style.left = '50%';
+        alertContainer.style.transform = 'translateX(-50%)';
+    }
+});
     </script>
     <script>
 document.addEventListener('DOMContentLoaded', () => {
