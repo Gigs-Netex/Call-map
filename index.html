@@ -868,5 +868,57 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 });
 </script>
+<script>
+/* Guard: only run queue-alert logic when time-filter === "5".
+   If the original checkQueueAlert exists, call it only when the filter is 5.
+   Otherwise remove any visible queue-alert UI to ensure alerts don't show. */
+(function(){
+    const originalCheck = window.checkQueueAlert;
+    window.checkQueueAlert = function(...args) {
+        const tf = document.getElementById('time-filter');
+        const enabled = tf && tf.value === '5';
+        if (!enabled) {
+            // Clear in-memory tracking if present
+            try {
+                if (window.activeQueueAlerts) {
+                    Object.keys(window.activeQueueAlerts).forEach(q => {
+                        if (typeof window.removeQueueAlert === 'function') {
+                            window.removeQueueAlert(q);
+                        } else {
+                            const el = window.activeQueueAlerts[q] && window.activeQueueAlerts[q].element;
+                            if (el && el.parentNode) el.parentNode.removeChild(el);
+                        }
+                    });
+                    window.activeQueueAlerts = {};
+                }
+            } catch (e) { /* ignore */ }
+
+            // Remove any DOM alert boxes/containers left behind
+            document.querySelectorAll('.queue-alert-box').forEach(el => el.remove());
+            const container = document.getElementById('queue-alert-container');
+            if (container && container.parentNode) container.parentNode.removeChild(container);
+
+            // Do not proceed with original alert logic when not enabled
+            return;
+        }
+
+        // If enabled and original exists, call it
+        if (typeof originalCheck === 'function') {
+            return originalCheck.apply(this, args);
+        }
+    };
+
+    // Ensure change on the time-filter triggers immediate re-evaluation/cleanup
+    const tfElem = document.getElementById('time-filter');
+    if (tfElem) {
+        tfElem.addEventListener('change', () => {
+            // Small delay to allow other change handlers to run first
+            setTimeout(() => {
+                if (typeof window.checkQueueAlert === 'function') window.checkQueueAlert();
+            }, 50);
+        });
+    }
+})();
+</script>
 </body>
 </html>
