@@ -10,6 +10,33 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="styles.css">
     <link rel="icon" type="image/x-icon" href="favicon.ico">
+    <style>
+        /* Queue filter styles */
+.queue-filters {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: 8px;
+}
+
+.queue-filters label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.queue-filters input[type="checkbox"] {
+    cursor: pointer;
+    width: 16px;
+    height: 16px;
+}
+
+.queue-filters input[type="checkbox"]:checked + span {
+    font-weight: 600;
+}
+    </style>
 </head>
 <body>
     <!-- Password Modal -->
@@ -37,7 +64,6 @@
                     <div class="filter-group">
                         <label for="time-filter">Time Range</label>
                         <select id="time-filter">
-                            <option value="1">Last minute</option>
                             <option value="5">Last 5 minutes</option>
                             <option value="15" selected>Last 15 minutes</option>
                             <option value="30">Last 30 minutes</option>
@@ -91,6 +117,14 @@
                 <div id="calls-list" style="flex: 1; overflow-y: auto;">
                     <!-- Call items will be added here dynamically -->
                 </div>
+            </div>
+
+            <!-- Queue filters section -->
+            <div class="sidebar-section queue-filters">
+                <h3>Queue Filters</h3>
+                <label><input type="checkbox" class="queue-toggle" value="COPS - General" checked> <span>COPS - General</span></label>
+                <label><input type="checkbox" class="queue-toggle" value="COPS - Technical" checked> <span>COPS - Technical</span></label>
+                <label><input type="checkbox" class="queue-toggle" value="COPS - Billing" checked> <span>COPS - Billing</span></label>
             </div>
         </div>
         
@@ -367,6 +401,7 @@
             if (queue === 'COPS - General') return blueIcon;
             else if (queue === 'COPS - Technical') return redIcon;
             else if (queue === 'COPS - Billing') return greenIcon;
+            else if (queue === 'Sales - Loyalty') return orangeIcon;
             return greyIcon;
         }
 
@@ -704,15 +739,6 @@ function addCallMarker(call) {
     // Create marker with an icon based on the queue
     const marker = L.marker([lat, long], { icon: getIconForQueue(queue) });
     marker.bindPopup(`
-        <div style="padding: 8px;">
-            <strong>Call from:</strong> ${number}<br>
-            <strong>Queue:</strong> ${queue}<br>
-            <strong>Location:</strong> ${location}<br>
-            <strong>Coordinates:</strong> ${lat.toFixed(6)}, ${long.toFixed(6)}<br>
-            <strong>Time:</strong> ${time}<br>
-            <strong>Status:</strong> ${status}<br>
-            <strong>Cabinet:</strong> ${cabinet}
-        </div>
     `);
     clusterGroup.addLayer(marker);
     
@@ -835,6 +861,71 @@ function updateClusterDensity() {
     // Reload pins from localStorage based on the current time filter.
     loadCallsFromLocalStorage();
 }
+
+// Track which queues are visible
+        const visibleQueues = new Set(['COPS - General', 'COPS - Technical', 'COPS - Billing']);
+
+        // Queue toggle filter functionality
+        document.querySelectorAll('.queue-toggle').forEach(checkbox => {
+            checkbox.addEventListener('change', (e) => {
+                const queue = e.target.value;
+                if (e.target.checked) {
+                    visibleQueues.add(queue);
+                } else {
+                    visibleQueues.delete(queue);
+                }
+                // Refresh the map to show/hide markers based on queue filter
+                refreshMapWithQueueFilter();
+                addLogEntry(`Queue filter: ${queue} ${e.target.checked ? 'enabled' : 'disabled'}`);
+            });
+        });
+
+        // Function to refresh map based on queue filters
+        function refreshMapWithQueueFilter() {
+            activePings.forEach((ping, id) => {
+                const marker = ping.marker;
+                if (visibleQueues.has(ping.queue)) {
+                    // Show marker
+                    if (!map.hasLayer(marker)) {
+                        clusterGroup.addLayer(marker);
+                    }
+                } else {
+                    // Hide marker
+                    if (map.hasLayer(marker)) {
+                        clusterGroup.removeLayer(marker);
+                    }
+                }
+            });
+            updateHeatmap();
+        }
+
+        // Update addCallMarker to respect queue filters
+        function addCallMarker(call) {
+            const { id, number, queue, location, long, lat, time, status, cabinet } = call;
+            
+            // Create marker with an icon based on the queue
+            const marker = L.marker([lat, long], { icon: getIconForQueue(queue) });
+            marker.bindPopup(`
+                <div style="padding: 8px;">
+                    <strong>Call from:</strong> ${number}<br>
+                    <strong>Queue:</strong> ${queue}<br>
+                    <strong>Location:</strong> ${location}<br>
+                    <strong>Coordinates:</strong> ${lat.toFixed(6)}, ${long.toFixed(6)}<br>
+                    <strong>Time:</strong> ${time}<br>
+                    <strong>Status:</strong> ${status}<br>
+                    <strong>Cabinet:</strong> ${cabinet}
+                </div>
+            `);
+            
+            // Only add to map if queue is visible
+            if (visibleQueues.has(queue)) {
+                clusterGroup.addLayer(marker);
+            }
+            
+            // Add the marker to our activePings map and update the sidebar
+            activePings.set(id, { marker, number, location, queue, cabinet });
+            addCallToList(id, number, location, queue);
+        }
     </script>
     <script>
 document.addEventListener('DOMContentLoaded', () => {
