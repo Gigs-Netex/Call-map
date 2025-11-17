@@ -55,6 +55,20 @@
                             <option value="west">West Region</option>
                         </select>
                     </div>
+                    <div class="filter-group" id="queue-filter-group" style="position:relative;">
+                        <label>Queues</label>
+                        <div id="queue-filter" style="font-size:14px;">
+                            <button id="queue-filter-toggle" type="button" style="width:100%;text-align:left;padding:6px;border:1px solid #ccc;border-radius:4px;background:white;cursor:pointer;">Select queues ▾</button>
+                            <div id="queue-filter-dropdown" style="display:none;position:absolute;left:0;top:44px;background:white;border:1px solid #ccc;padding:8px;border-radius:4px;box-shadow:0 4px 8px rgba(0,0,0,0.1);z-index:1000;max-height:220px;overflow:auto;min-width:220px;">
+                                <div style="font-size:12px;color:#666;margin-bottom:6px;">Toggle queues to show/hide markers</div>
+                                <div id="queue-filter-list"></div>
+                                <div style="display:flex;gap:8px;margin-top:8px;">
+                                    <button id="queue-filter-select-all" type="button" style="flex:1;padding:6px;">All</button>
+                                    <button id="queue-filter-clear-all" type="button" style="flex:1;padding:6px;">None</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                     <div class="filter-group">
                         <label for="cluster-slider">Cluster Density (0 = off)</label>
                         <input type="range" id="cluster-slider" min="5" max="100" step="5" value="30">
@@ -162,7 +176,16 @@
         // Store active pings
         const activePings = new Map();
         let callCounter = 0;
-        const availableQueues = ["COPS - General", "COPS - Technical", "COPS - Billing"];
+        // Full list of queues used for the queue filter
+        const availableQueues = [
+            "COPS - Build",
+            "COPS - General",
+            "COPS - Installation",
+            "COPS - Technical",
+            "COPS - Wholesale Assistance",
+            "Sales - Loyalty",
+            "Enablement IB"
+        ];
 
         // DOM elements
         const logElement = document.getElementById('log');
@@ -174,6 +197,86 @@
         const callsList = document.getElementById('calls-list');
         const totalCallsElement = document.getElementById('total-calls');
         const activeCallsElement = document.getElementById('active-calls');
+        // Queue filter persistence key
+        const QUEUE_FILTER_STORAGE_KEY = 'queue-filter-selection';
+
+        // Build the queue filter UI (checkboxes) dynamically based on availableQueues
+        function buildQueueFilterUI() {
+            const list = document.getElementById('queue-filter-list');
+            const toggle = document.getElementById('queue-filter-toggle');
+            const dropdown = document.getElementById('queue-filter-dropdown');
+            if (!list || !toggle || !dropdown) return;
+
+            // Clear existing
+            list.innerHTML = '';
+
+            // Load persisted selection (array) or default to all selected
+            let persisted = JSON.parse(localStorage.getItem(QUEUE_FILTER_STORAGE_KEY) || 'null');
+            // If persisted is null, we'll treat as all selected
+
+            availableQueues.forEach(q => {
+                const id = 'qchk-' + q.replace(/[^a-z0-9]+/gi, '_');
+                const row = document.createElement('div');
+                row.style.marginBottom = '6px';
+                row.innerHTML = `
+                    <label style="display:flex;align-items:center;gap:8px;">
+                        <input type="checkbox" id="${id}" class="queue-checkbox" data-queue="${q}" />
+                        <span style="font-size:13px">${q}</span>
+                    </label>
+                `;
+                list.appendChild(row);
+                const chk = document.getElementById(id);
+                if (chk) {
+                    if (persisted === null) chk.checked = true;
+                    else chk.checked = !!persisted.includes(q);
+                    chk.addEventListener('change', () => {
+                        saveQueueFilterSelection();
+                        loadCallsFromLocalStorage();
+                    });
+                }
+            });
+
+            // Toggle dropdown
+            toggle.addEventListener('click', () => {
+                if (dropdown.style.display === 'none' || dropdown.style.display === '') {
+                    dropdown.style.display = 'block';
+                } else {
+                    dropdown.style.display = 'none';
+                }
+            });
+
+            // Select all / clear all buttons
+            const selAll = document.getElementById('queue-filter-select-all');
+            const clrAll = document.getElementById('queue-filter-clear-all');
+            selAll.addEventListener('click', () => {
+                document.querySelectorAll('#queue-filter-list .queue-checkbox').forEach(cb => cb.checked = true);
+                saveQueueFilterSelection();
+                loadCallsFromLocalStorage();
+            });
+            clrAll.addEventListener('click', () => {
+                document.querySelectorAll('#queue-filter-list .queue-checkbox').forEach(cb => cb.checked = false);
+                saveQueueFilterSelection();
+                loadCallsFromLocalStorage();
+            });
+        }
+
+        function saveQueueFilterSelection() {
+            const selected = [];
+            document.querySelectorAll('#queue-filter-list .queue-checkbox').forEach(cb => {
+                if (cb.checked) selected.push(cb.dataset.queue);
+            });
+            localStorage.setItem(QUEUE_FILTER_STORAGE_KEY, JSON.stringify(selected));
+        }
+
+        // Returns a Set of selected queues, or null if all are selected (or no selection saved)
+        function getSelectedQueues() {
+            const stored = JSON.parse(localStorage.getItem(QUEUE_FILTER_STORAGE_KEY) || 'null');
+            if (!stored) return null; // treat null as all selected
+            return new Set(stored);
+        }
+
+        // Initialize the UI immediately (script runs after DOM is ready)
+        buildQueueFilterUI();
         
         function updateStats() {
             if (totalCallsElement) {
@@ -764,23 +867,30 @@ function loadCallsFromLocalStorage() {
         threshold = Date.now() - minutesRange * 60 * 1000;
     }
 
+    // Determine selected queues (null => all selected)
+    const selectedQueues = getSelectedQueues();
+
     // Use today’s date as key
     const today = new Date().toISOString().split('T')[0];
     const storageKey = 'calls-' + today;
     const storedCalls = JSON.parse(localStorage.getItem(storageKey)) || [];
 
-    // Build a map of calls that should be visible currently
+    // Build a map of calls that should be visible currently and match queue filter
     const visibleCalls = new Map();
     storedCalls.forEach(call => {
-        if (new Date(call.time).getTime() >= threshold) {
+        const callTime = new Date(call.time).getTime();
+        if (callTime >= threshold) {
+            // If a queue filter is set and this call's queue is not selected, skip it
+            if (selectedQueues && !selectedQueues.has(call.queue)) return;
             visibleCalls.set(call.id, call);
         }
     });
 
-    // Remove markers from activePings that are no longer visible,
+    // Remove markers from activePings that are no longer visible or excluded by queue filter,
     // unless the popup is open.
     activePings.forEach((ping, id) => {
-        if (!visibleCalls.has(id)) {
+        const excludedByQueue = selectedQueues && !selectedQueues.has(ping.queue);
+        if (!visibleCalls.has(id) || excludedByQueue) {
             if (!ping.marker.isPopupOpen()) {
                 clusterGroup.removeLayer(ping.marker);
                 activePings.delete(id);
@@ -794,7 +904,7 @@ function loadCallsFromLocalStorage() {
         }
     });
 
-    // Add any new calls that are visible but not already on the map.
+    // Add any new calls that are visible (and match queue filter) but not already on the map.
     visibleCalls.forEach((call, id) => {
         if (!activePings.has(id)) {
             addCallMarker(call);
